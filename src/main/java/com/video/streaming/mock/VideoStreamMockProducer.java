@@ -6,13 +6,11 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.opencv.core.Mat;
-import org.opencv.core.MatOfByte;
-import org.opencv.imgcodecs.Imgcodecs;
+import org.bytedeco.opencv.opencv_core.Mat;
+import org.bytedeco.opencv.global.opencv_imgcodecs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -47,8 +45,8 @@ public class VideoStreamMockProducer {
     private final AtomicLong globalFrameId = new AtomicLong(0);
 
     static {
-        // 加载OpenCV库
-        nu.pattern.OpenCV.loadLocally();
+        // JavaCV的OpenCV实现通常不需要特殊初始化，但我们可以添加一些日志
+        LOG.info("Initializing OpenCV with JavaCV");
     }
 
     public VideoStreamMockProducer(String bootstrapServers,
@@ -203,20 +201,25 @@ public class VideoStreamMockProducer {
     private VideoFrame buildVideoFrame(String streamId, String imagePath, int frameSequence) {
         try {
             // 读取图片
-            Mat image = Imgcodecs.imread(imagePath);
+            Mat image = opencv_imgcodecs.imread(imagePath);
             if (image.empty()) {
                 LOG.warn("Failed to read image: {}", imagePath);
                 return null;
             }
 
-            // 编码为JPEG
-            MatOfByte buffer = new MatOfByte();
-            Imgcodecs.imencode(".jpg", image, buffer);
-            byte[] frameData = buffer.toArray();
-
-            // 释放资源
-            image.release();
-            buffer.release();
+            // 编码为JPEG - 使用JavaCV的方法，并将其转换为byte数组
+            org.bytedeco.javacpp.BytePointer ptr = new org.bytedeco.javacpp.BytePointer();
+            boolean success = opencv_imgcodecs.imencode(".jpg", image, ptr);
+            if (!success) {
+                LOG.warn("Failed to encode image: {}", imagePath);
+                return null;
+            }
+            
+            // 获取编码后的数据长度
+            int dataLength = (int) ptr.limit();
+            // 将BytePointer转换为byte数组
+            byte[] frameData = new byte[dataLength];
+            ptr.get(frameData);
 
             // 构建VideoFrame
             VideoFrame frame = VideoFrame.builder()
@@ -329,16 +332,17 @@ class SimpleImageProducer {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     static {
-        nu.pattern.OpenCV.loadLocally();
+        // JavaCV的OpenCV实现通常不需要特殊初始化，但我们可以添加一些日志
+        LOG.info("Initializing OpenCV with JavaCV in SimpleImageProducer");
     }
 
     public static void main(String[] args) throws Exception {
 
-        String bootstrapServers = "localhost:9092";
+        String bootstrapServers = "test02-be1:9092,test02-be2:9092,test02-be3:9092";
         String topic = "video-stream-topic";
-        String imagePath = "src/test/resources/test-images/sample.jpg";
+        String imagePath = "D:\\workspace\\video-stream-processing\\src\\main\\resources\\test-images\\car.jpg";
         String streamId = "camera_001";
-        int totalFrames = 100;
+        int totalFrames = 10;
 
         // 创建Kafka生产者
         Properties props = new Properties();
@@ -349,15 +353,25 @@ class SimpleImageProducer {
         KafkaProducer<String, String> producer = new KafkaProducer<>(props);
 
         // 读取图片
-        Mat image = Imgcodecs.imread(imagePath);
+        Mat image = opencv_imgcodecs.imread(imagePath);
         if (image.empty()) {
             LOG.error("Failed to read image: {}", imagePath);
             System.exit(1);
         }
 
-        MatOfByte buffer = new MatOfByte();
-        Imgcodecs.imencode(".jpg", image, buffer);
-        byte[] frameData = buffer.toArray();
+        // 编码为JPEG
+        org.bytedeco.javacpp.BytePointer ptr = new org.bytedeco.javacpp.BytePointer();
+        boolean success = opencv_imgcodecs.imencode(".jpg", image, ptr);
+        if (!success) {
+            LOG.error("Failed to encode image: {}", imagePath);
+            System.exit(1);
+        }
+        
+        // 获取编码后的数据长度
+        int dataLength = (int) ptr.limit();
+        // 将BytePointer转换为byte数组
+        byte[] frameData = new byte[dataLength];
+        ptr.get(frameData);
 
         LOG.info("Image loaded: {}x{}, size: {} bytes",
                 image.cols(), image.rows(), frameData.length);
@@ -391,8 +405,6 @@ class SimpleImageProducer {
         }
 
         // 清理资源
-        image.release();
-        buffer.release();
         producer.flush();
         producer.close();
 

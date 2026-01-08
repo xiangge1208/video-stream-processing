@@ -2,7 +2,7 @@ package com.video.streaming.processor;
 
 import com.video.streaming.model.VideoFrame;
 import com.video.streaming.util.ImageUtils;
-import org.opencv.core.Mat;
+import org.bytedeco.opencv.opencv_core.Mat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

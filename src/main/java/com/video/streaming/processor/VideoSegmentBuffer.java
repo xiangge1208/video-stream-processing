@@ -22,7 +22,7 @@ public class VideoSegmentBuffer implements Serializable {
 
     private final long segmentDuration; // 切片时长（毫秒）
     private final VideoStreamConfig config; // 添加配置参数
-    private List<VideoFrame> frames;
+    private final List<VideoFrame> frames;
     private long segmentStartTime;
 
     public VideoSegmentBuffer(long segmentDuration, VideoStreamConfig config) {
@@ -102,6 +102,14 @@ public class VideoSegmentBuffer implements Serializable {
             LOG.error("Error building video segment for stream: {}", streamId, e);
             return null;
         }
+    }
+
+    /**
+     * 重置缓冲区
+     */
+    public void reset(long newStartTime) {
+        frames.clear();
+        segmentStartTime = newStartTime;
     }
 
     /**

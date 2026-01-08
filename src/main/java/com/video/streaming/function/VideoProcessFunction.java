@@ -1,155 +1,140 @@
 package com.video.streaming.function;
 
+import com.video.streaming.VideoStreamProcessingJob;
 import com.video.streaming.config.VideoStreamConfig;
-import com.video.streaming.model.Detection;
 import com.video.streaming.model.DetectionResult;
 import com.video.streaming.model.VideoFrame;
 import com.video.streaming.model.VideoSegment;
 import com.video.streaming.processor.KeyFrameExtractor;
 import com.video.streaming.processor.VideoSegmentBuffer;
 import com.video.streaming.processor.YOLODetector;
-import com.video.streaming.sink.DorisSinkBuilder;
-import com.video.streaming.util.ImageUtils;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
-import org.apache.flink.util.Collector;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.api.common.typeinfo.TypeHint;
-import org.apache.flink.api.common.typeutils.base.StringSerializer;
-import org.bytedeco.opencv.opencv_core.Mat;
+import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 视频处理函数
+ * 视频处理核心函数
  * 功能：
  * 1. 关键帧提取
  * 2. YOLO目标检测
- * 3. 检测结果发送到Doris
- * 4. 视频按3分钟切片保存
+ * 3. 视频切片缓冲
  */
-public class VideoProcessFunction extends ProcessFunction<VideoFrame, String> implements CheckpointedFunction {
+public class VideoProcessFunction
+        extends KeyedProcessFunction<String, VideoFrame, DetectionResult>
+        implements CheckpointedFunction {
+
     private static final Logger LOG = LoggerFactory.getLogger(VideoProcessFunction.class);
 
-    // 状态管理
-    private transient ListState<VideoFrame> videoBufferState;
-    private transient ValueState<String> lastProcessedStreamIdState;
+    // 3分钟切片时长（毫秒）
+    private static final long SEGMENT_DURATION_MS = 3 * 60 * 1000;
 
-    // 处理组件
-    private transient YOLODetector yoloDetector;
+    // 处理器
     private transient KeyFrameExtractor keyFrameExtractor;
+    private transient YOLODetector yoloDetector;
     private transient VideoSegmentBuffer segmentBuffer;
-    private VideoStreamConfig config;
 
-    // 统计信息
-    private transient AtomicLong totalFramesProcessed;
-    private transient AtomicLong keyFramesExtracted;
+    // 状态：保存未完成的视频段
+    private transient ListState<VideoFrame> videoBufferState;
 
-    public VideoProcessFunction(VideoStreamConfig config) {
-        this.config = config;
-    }
+    // 指标计数器
+    private long totalFramesProcessed = 0;
+    private long keyFramesExtracted = 0;
 
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
 
-        // 初始化处理组件
-        yoloDetector = new YOLODetector(
-                config.getYoloModelPath(),
-                config.getYoloConfidenceThreshold()
-        );
-        keyFrameExtractor = new KeyFrameExtractor(config.getKeyframeMinInterval());
-        
-        // 使用配置参数创建视频切片缓冲区
-        segmentBuffer = new VideoSegmentBuffer(config.getVideoSegmentDuration(), config);
+        LOG.info("Initializing VideoProcessFunction...");
 
-        // 初始化统计计数器
-        totalFramesProcessed = new AtomicLong(0);
-        keyFramesExtracted = new AtomicLong(0);
+        // 初始化关键帧提取器
+        keyFrameExtractor = new KeyFrameExtractor();
+        LOG.info("KeyFrameExtractor initialized");
 
-        LOG.info("VideoProcessFunction opened and initialized");
+        VideoStreamConfig config = new VideoStreamConfig();
+
+        // 初始化YOLO检测器
+        String modelPath = parameters.getString("yolo.model.path",
+                "src/main/resources/models/yolov8n.onnx");
+        float confidenceThreshold = parameters.getFloat("yolo.confidence.threshold", 0.5f);
+        yoloDetector = new YOLODetector(modelPath, confidenceThreshold);
+        LOG.info("YOLODetector initialized with model: {}", modelPath);
+
+        // 初始化视频段缓冲器
+        segmentBuffer = new VideoSegmentBuffer(SEGMENT_DURATION_MS,config);
+        LOG.info("VideoSegmentBuffer initialized with duration: {}ms", SEGMENT_DURATION_MS);
     }
 
     @Override
-    public void processElement(VideoFrame frame, Context ctx, Collector<String> out) throws Exception {
+    public void processElement(VideoFrame frame,
+                               Context ctx,
+                               Collector<DetectionResult> out) throws Exception {
+
         String streamId = frame.getStreamId();
-        long currentTimestamp = System.currentTimeMillis();
+        long timestamp = frame.getTimestamp();
 
-        // 更新统计信息
-        long totalProcessed = totalFramesProcessed.incrementAndGet();
+        totalFramesProcessed++;
 
-        // 关键帧检测
-        boolean isKeyFrame = keyFrameExtractor.isKeyFrame(frame);
-        if (isKeyFrame) {
-            keyFramesExtracted.incrementAndGet();
+        // 1. 添加帧到视频段缓冲区
+        segmentBuffer.addFrame(frame);
+
+        // 2. 检查是否需要输出视频段
+        if (segmentBuffer.shouldFlush(timestamp)) {
+            VideoSegment segment = segmentBuffer.buildSegment(streamId);
+            if (segment != null) {
+                // 输出到侧输出流
+                ctx.output(VideoStreamProcessingJob.VIDEO_SEGMENT_TAG, segment);
+                LOG.info("Video segment created for stream: {}, frames: {}, duration: {}ms",
+                        streamId, segment.getFrameCount(), segment.getDuration());
+            }
+            segmentBuffer.reset(timestamp);
+        }
+
+        // 3. 关键帧检测
+        if (keyFrameExtractor.isKeyFrame(frame)) {
+            keyFramesExtracted++;
 
             try {
-                // 执行YOLO检测
-                List<Detection> detections = yoloDetector.detect(frame.getFrameData());
+                // 4. YOLO目标检测
+                List<com.video.streaming.model.Detection> detections =
+                        yoloDetector.detect(frame.getFrameData());
 
-                // 处理检测结果
-                if (!detections.isEmpty()) {
-                    // 创建检测结果对象
-                    DetectionResult result = DetectionResult.builder()
-                            .streamId(streamId)
-                            .timestamp(frame.getTimestamp())
-                            .frameId(frame.getFrameId())
-                            .detections(detections)
-                            .frameUrl(null) // 暂时为空，可根据需要填充
-                            .build();
+                // 5. 构建检测结果
+                DetectionResult result = DetectionResult.builder()
+                        .streamId(streamId)
+                        .frameId(frame.getFrameId())
+                        .timestamp(timestamp)
+                        .detections(detections)
+                        .frameUrl(null) // 可选：上传关键帧到OSS并设置URL
+                        .build();
 
-                    // 将检测结果转换为JSON并发送到Doris
-                    String jsonResult = DorisSinkBuilder.convertToJson(result);
-                    if (jsonResult != null) {
-                        // 这里应该有实际的数据流来发送到Doris
-                        LOG.debug("Detection result: stream={}, frame={}, detections={}",
-                                streamId, frame.getFrameId(), detections.size());
-                    }
+                // 6. 输出检测结果
+                out.collect(result);
+
+                if (detections != null && !detections.isEmpty()) {
+                    LOG.debug("Detected {} objects in frame {} from stream {}",
+                            detections.size(), frame.getFrameId(), streamId);
                 }
-
-                // 将关键帧添加到切片缓冲区
-                segmentBuffer.addFrame(frame);
-
-                // 检查是否需要刷新视频切片
-                if (segmentBuffer.shouldFlush(currentTimestamp)) {
-                    VideoSegment segment = segmentBuffer.buildSegment(streamId);
-                    if (segment != null) {
-                        LOG.info("Video segment flushed: {}", segment.getLocalFilePath());
-                    }
-                }
-
             } catch (Exception e) {
-                LOG.error("Error processing key frame for stream {}, frame {}", 
-                        streamId, frame.getFrameId(), e);
-            }
-        } else {
-            // 对于非关键帧，仍然添加到切片缓冲区以维持连续性
-            segmentBuffer.addFrame(frame);
-
-            // 检查是否需要刷新视频切片
-            if (segmentBuffer.shouldFlush(currentTimestamp)) {
-                VideoSegment segment = segmentBuffer.buildSegment(streamId);
-                if (segment != null) {
-                    LOG.info("Video segment flushed: {}", segment.getLocalFilePath());
-                }
+                LOG.error("Error detecting objects in frame {} from stream {}",
+                        frame.getFrameId(), streamId, e);
             }
         }
 
         // 定期打印处理统计信息
-        if (totalProcessed % 1000 == 0) {
+        if (totalFramesProcessed % 1000 == 0) {
             LOG.info("Stream: {}, Total frames: {}, Key frames: {}, Rate: {:.2f}%",
-                    streamId, totalProcessed, keyFramesExtracted.get(),
-                    (keyFramesExtracted.get() * 100.0 / totalProcessed));
+                    streamId, totalFramesProcessed, keyFramesExtracted,
+                    (keyFramesExtracted * 100.0 / totalFramesProcessed));
         }
     }
 
@@ -163,7 +148,7 @@ public class VideoProcessFunction extends ProcessFunction<VideoFrame, String> im
         }
 
         LOG.info("VideoProcessFunction closed. Total frames processed: {}, Key frames: {}",
-                totalFramesProcessed.get(), keyFramesExtracted.get());
+                totalFramesProcessed, keyFramesExtracted);
     }
 
     @Override
