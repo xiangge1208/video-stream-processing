@@ -25,6 +25,7 @@
         <jackson.version>2.15.3</jackson.version>
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.20.0</log4j.version>
+        <javacv.version>1.5.9</javacv.version>
     </properties>
 
     <dependencies>
@@ -128,6 +129,13 @@
             <groupId>nu.pattern</groupId>
             <artifactId>opencv</artifactId>
             <version>2.4.9-7</version>
+        </dependency>
+
+        <!-- ========== JavaCV (FFmpeg support) ========== -->
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacv-platform</artifactId>
+            <version>${javacv.version}</version>
         </dependency>
 
         <!-- ========== 阿里云 OSS SDK ========== -->

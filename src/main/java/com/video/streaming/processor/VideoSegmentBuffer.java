@@ -1,5 +1,6 @@
 package com.video.streaming.processor;
 
+import com.video.streaming.config.VideoStreamConfig;
 import com.video.streaming.model.VideoFrame;
 import com.video.streaming.model.VideoSegment;
 import com.video.streaming.util.FFmpegUtils;
@@ -20,11 +21,13 @@ public class VideoSegmentBuffer implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(VideoSegmentBuffer.class);
 
     private final long segmentDuration; // 切片时长（毫秒）
+    private final VideoStreamConfig config; // 添加配置参数
     private List<VideoFrame> frames;
     private long segmentStartTime;
 
-    public VideoSegmentBuffer(long segmentDuration) {
+    public VideoSegmentBuffer(long segmentDuration, VideoStreamConfig config) {
         this.segmentDuration = segmentDuration;
+        this.config = config; // 保存配置
         this.frames = new ArrayList<>();
         this.segmentStartTime = 0;
     }
@@ -62,11 +65,12 @@ public class VideoSegmentBuffer implements Serializable {
             long endTime = frames.get(frames.size() - 1).getTimestamp();
             long duration = endTime - startTime;
 
-            // 使用FFmpeg将帧编码为视频文件
+            // 使用FFmpeg将帧编码为视频文件，传入配置参数
             String outputPath = FFmpegUtils.encodeFramesToVideo(
                     frames,
                     streamId,
-                    startTime
+                    startTime,
+                    config
             );
 
             if (outputPath == null) {
@@ -87,23 +91,17 @@ public class VideoSegmentBuffer implements Serializable {
                     .duration(duration)
                     .build();
 
-            LOG.info("Video segment built: stream={}, frames={}, duration={}ms, size={}bytes",
-                    streamId, frames.size(), duration, fileSize);
+            LOG.info("Video segment built: stream={}, duration={}ms, frames={}, size={}bytes",
+                    streamId, duration, frames.size(), fileSize);
+
+            // 清空缓冲区
+            frames.clear();
 
             return segment;
-
         } catch (Exception e) {
             LOG.error("Error building video segment for stream: {}", streamId, e);
             return null;
         }
-    }
-
-    /**
-     * 重置缓冲区
-     */
-    public void reset(long newStartTime) {
-        frames.clear();
-        segmentStartTime = newStartTime;
     }
 
     /**
@@ -114,16 +112,16 @@ public class VideoSegmentBuffer implements Serializable {
     }
 
     /**
-     * 获取帧数量
-     */
-    public int getFrameCount() {
-        return frames.size();
-    }
-
-    /**
-     * 获取所有帧（用于状态恢复）
+     * 获取帧列表（用于状态恢复）
      */
     public List<VideoFrame> getFrames() {
         return new ArrayList<>(frames);
+    }
+
+    /**
+     * 获取帧计数
+     */
+    public int getFrameCount() {
+        return frames.size();
     }
 }

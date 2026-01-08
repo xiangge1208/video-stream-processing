@@ -44,12 +44,9 @@ ffmpeg -version
 mkdir -p src/main/resources/models
 cd src/main/resources/models
 
-# 方法1: 使用wget
-wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov11n.onnx
-
-# 方法2: 使用Python转换
+# 使用Python转换
 pip install ultralytics
-python -c "from ultralytics import YOLO; YOLO('yolov11n.pt').export(format='onnx')"
+python yolo_export.py
 ```
 
 ### 2. 配置修改
@@ -233,7 +230,7 @@ video-stream-processing/
 │   │       ├── application.properties         # 应用配置
 │   │       ├── log4j2.properties             # 日志配置
 │   │       └── models/
-│   │           └── yolov11n.onnx              # YOLO模型
+│   │           └── yolov8n.onnx              # YOLO模型
 │   └── test/
 │       └── java/...                          # 单元测试
 └── README.md

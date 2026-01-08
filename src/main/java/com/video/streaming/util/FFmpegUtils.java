@@ -1,42 +1,140 @@
 package com.video.streaming.util;
 
+import com.video.streaming.config.VideoStreamConfig;
 import com.video.streaming.model.VideoFrame;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
+import org.bytedeco.javacv.FFmpegFrameGrabber;
+import org.bytedeco.javacv.Frame;
+import org.bytedeco.javacv.OpenCVFrameConverter;
+import org.bytedeco.opencv.opencv_core.Mat;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 
+import static org.bytedeco.opencv.global.opencv_imgproc.COLOR_BGR2RGB;
+import static org.bytedeco.opencv.global.opencv_imgproc.cvtColor;
+
 /**
- * FFmpeg工具类（视频编码）
- * 注意：需要系统安装FFmpeg
+ * FFmpeg工具类
+ * 处理视频帧编码、解码和流处理
  */
+@Slf4j
 public class FFmpegUtils {
 
-    private static final Logger LOG = LoggerFactory.getLogger(FFmpegUtils.class);
-    private static final String TEMP_DIR = "/tmp/video-segments";
+    private static final String TEMP_DIR = System.getProperty("java.io.tmpdir") + "/video_segments";
 
     static {
-        // 创建临时目录
         try {
+            // 创建临时目录
             Files.createDirectories(Paths.get(TEMP_DIR));
         } catch (IOException e) {
-            LOG.error("Failed to create temp directory", e);
+            log.error("Failed to create temp directory: {}", TEMP_DIR, e);
         }
     }
 
     /**
-     * 将视频帧编码为MP4文件
-     * 简化版：直接保存帧序列为图片，然后用FFmpeg合成视频
+     * 根据配置参数构建FFmpeg命令
      */
-    public static String encodeFramesToVideo(List<VideoFrame> frames,
-                                             String streamId,
-                                             long startTime) {
+    public static String buildFFmpegCommand(VideoStreamConfig config, String inputStream, String outputStream) {
+        StringBuilder command = new StringBuilder("ffmpeg");
+        
+        // 根据协议添加输入参数
+        if ("rtsp".equalsIgnoreCase(config.getVideoStreamProtocol())) {
+            command.append(" -rtsp_transport ").append(config.getRtspTransport());
+            command.append(" -timeout ").append(config.getRtspTimeout() * 1000000); // 转换为微秒
+        } else if ("gb28181".equalsIgnoreCase(config.getVideoStreamProtocol())) {
+            // GB/T 28181协议的特殊参数
+            command.append(" -protocol_whitelist file,http,https,tcp,tls,udp,rtp,rtsp");
+        }
+        
+        command.append(" -i ").append(inputStream);
+        
+        // 视频编码参数
+        if (config.getVideoCodec() != null) {
+            command.append(" -c:v ").append(config.getVideoCodec());
+        } else {
+            command.append(" -c:v libx264"); // 默认H.264
+        }
+        
+        if (config.getPixelFormat() != null) {
+            command.append(" -pix_fmt ").append(config.getPixelFormat());
+        } else {
+            command.append(" -pix_fmt yuv420p"); // 默认像素格式
+        }
+        
+        if (config.getVideoBitrate() > 0) {
+            command.append(" -b:v ").append(config.getVideoBitrate()).append("k");
+        }
+        
+        if (config.getFramerate() > 0) {
+            command.append(" -r ").append(config.getFramerate());
+        }
+        
+        command.append(" ").append(outputStream);
+        command.append(" -y"); // 覆盖输出文件
+        
+        return command.toString();
+    }
+
+    /**
+     * 从视频流中提取帧
+     */
+    public static Mat[] extractFramesFromStream(String streamUrl, int maxFrames, VideoStreamConfig config) {
+        FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(streamUrl);
+        try {
+            // 根据协议设置grabber参数
+            if ("rtsp".equalsIgnoreCase(config.getVideoStreamProtocol())) {
+                grabber.setOption("rtsp_transport", config.getRtspTransport());
+                grabber.setOption("stimeout", String.valueOf(config.getRtspTimeout() * 1000000L));
+            } else if ("gb28181".equalsIgnoreCase(config.getVideoStreamProtocol())) {
+                // GB/T 28181协议参数
+                grabber.setOption("protocol_whitelist", "file,http,https,tcp,tls,udp,rtp,rtsp");
+            }
+
+            grabber.start();
+
+            Mat[] frames = new Mat[maxFrames];
+            int frameCount = 0;
+            while (frameCount < maxFrames) {
+                Frame frame = grabber.grab();
+                if (frame == null) break;
+                
+                // 将Frame转换为Mat
+                OpenCVFrameConverter.ToMat converterToMat = new OpenCVFrameConverter.ToMat();
+                Mat mat = converterToMat.convert(frame);
+                
+                // 转换为RGB格式
+                Mat rgbMat = new Mat();
+                cvtColor(mat, rgbMat, COLOR_BGR2RGB);
+                
+                frames[frameCount] = rgbMat.clone(); // 克隆以确保数据独立
+                frameCount++;
+            }
+
+            log.info("Extracted {} frames from stream: {}", frameCount, streamUrl);
+            return frames;
+        } catch (Exception e) {
+            log.error("Error extracting frames from stream: {}", streamUrl, e);
+            return null;
+        } finally {
+            try {
+                grabber.stop();
+                grabber.release();
+            } catch (Exception e) {
+                log.error("Error stopping/releasing grabber", e);
+            }
+        }
+    }
+
+    /**
+     * 将帧序列编码为视频文件
+     */
+    public static String encodeFramesToVideo(List<VideoFrame> frames, String streamId, long startTime, VideoStreamConfig config) {
         if (frames == null || frames.isEmpty()) {
             return null;
         }
@@ -58,30 +156,34 @@ public class FFmpegUtils {
             }
 
             // 使用FFmpeg合成视频
-            // 假设帧率为25fps
+            String framerate = config.getFramerate() > 0 ? String.valueOf(config.getFramerate()) : "25";
+            String videoCodec = config.getVideoCodec() != null ? config.getVideoCodec() : "libx264";
+            String pixelFormat = config.getPixelFormat() != null ? config.getPixelFormat() : "yuv420p";
+            String videoBitrate = config.getVideoBitrate() > 0 ? config.getVideoBitrate() + "k" : "2048k";
+
             String ffmpegCommand = String.format(
-                    "ffmpeg -framerate 25 -i %s/frame_%%05d.jpg -c:v libx264 -pix_fmt yuv420p %s",
-                    frameDir, outputPath
+                    "ffmpeg -framerate %s -i %s/frame_%%05d.jpg -c:v %s -pix_fmt %s -b:v %s %s -y",
+                    framerate, frameDir, videoCodec, pixelFormat, videoBitrate, outputPath
             );
 
             Process process = Runtime.getRuntime().exec(ffmpegCommand);
             int exitCode = process.waitFor();
 
             if (exitCode == 0) {
-                LOG.info("Video encoded successfully: {}", outputPath);
+                log.info("Video encoded successfully: {}", outputPath);
 
                 // 清理临时帧文件
                 deleteDirectory(new File(frameDir));
 
                 return outputPath;
             } else {
-                LOG.error("FFmpeg encoding failed with exit code: {}", exitCode);
+                log.error("FFmpeg encoding failed with exit code: {}", exitCode);
                 logProcessOutput(process);
                 return null;
             }
 
         } catch (Exception e) {
-            LOG.error("Error encoding frames to video", e);
+            log.error("Error encoding frames to video", e);
             return null;
         }
     }
@@ -93,7 +195,7 @@ public class FFmpegUtils {
         try {
             return Files.size(Paths.get(filePath));
         } catch (IOException e) {
-            LOG.error("Error getting file size: {}", filePath, e);
+            log.error("Error getting file size: {}", filePath, e);
             return 0;
         }
     }
@@ -121,14 +223,14 @@ public class FFmpegUtils {
      * 记录进程输出
      */
     private static void logProcessOutput(Process process) {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getErrorStream()))) {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(process.getErrorStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                LOG.error("FFmpeg: {}", line);
+                log.error("FFmpeg: {}", line);
             }
         } catch (IOException e) {
-            LOG.error("Error reading process output", e);
+            log.error("Error reading process output", e);
         }
     }
 }

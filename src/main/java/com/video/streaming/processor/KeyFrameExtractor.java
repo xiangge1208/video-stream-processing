@@ -20,15 +20,32 @@ public class KeyFrameExtractor implements Serializable {
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(KeyFrameExtractor.class);
 
-    // 最小关键帧间隔（毫秒）
-    private static final long MIN_KEYFRAME_INTERVAL = 5000; // 5秒
+    // 默认最小关键帧间隔（毫秒）
+    private static final long DEFAULT_MIN_KEYFRAME_INTERVAL = 5000; // 5秒
 
     // 场景变化阈值
     private static final double SCENE_CHANGE_THRESHOLD = 0.3;
 
+    // 最小关键帧间隔（毫秒）
+    private final long minKeyframeInterval;
+
     // 上一帧信息
     private transient VideoFrame previousFrame;
     private transient long lastKeyFrameTime = 0;
+
+    /**
+     * 默认构造函数，使用默认间隔
+     */
+    public KeyFrameExtractor() {
+        this.minKeyframeInterval = DEFAULT_MIN_KEYFRAME_INTERVAL;
+    }
+
+    /**
+     * 带参数的构造函数，允许自定义间隔
+     */
+    public KeyFrameExtractor(long minKeyframeInterval) {
+        this.minKeyframeInterval = minKeyframeInterval;
+    }
 
     /**
      * 判断是否为关键帧
@@ -37,7 +54,7 @@ public class KeyFrameExtractor implements Serializable {
         long currentTime = currentFrame.getTimestamp();
 
         // 策略1: 时间间隔检查（强制策略）
-        if (currentTime - lastKeyFrameTime >= MIN_KEYFRAME_INTERVAL) {
+        if (currentTime - lastKeyFrameTime >= minKeyframeInterval) {
             lastKeyFrameTime = currentTime;
             previousFrame = currentFrame;
             return true;
