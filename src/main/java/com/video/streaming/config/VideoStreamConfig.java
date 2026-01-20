@@ -29,11 +29,21 @@ public class VideoStreamConfig implements Serializable {
     private String dorisUsername;
     private String dorisPassword;
 
+    // 存储类型配置
+    private String storageType; // oss 或 minio
+
     // OSS配置
     private String ossEndpoint;
     private String ossAccessKeyId;
     private String ossAccessKeySecret;
     private String ossBucket;
+
+    // MinIO配置
+    private String minioEndpoint;
+    private String minioAccessKeyId;
+    private String minioAccessKeySecret;
+    private String minioBucket;
+    private boolean minioSecure; // 是否使用HTTPS
 
     // YOLO配置
     private String yoloModelPath;
@@ -80,11 +90,21 @@ public class VideoStreamConfig implements Serializable {
             config.setDorisUsername(props.getProperty("doris.username", "root"));
             config.setDorisPassword(props.getProperty("doris.password", ""));
             
+            // 加载存储类型配置
+            config.setStorageType(props.getProperty("storage.type", "oss").toLowerCase());
+
             // 加载OSS配置
             config.setOssEndpoint(props.getProperty("oss.endpoint", "http://oss-cn-hangzhou.aliyuncs.com"));
             config.setOssAccessKeyId(props.getProperty("oss.access.key.id", ""));
             config.setOssAccessKeySecret(props.getProperty("oss.access.key.secret", ""));
             config.setOssBucket(props.getProperty("oss.bucket", "video-storage"));
+
+            // 加载MinIO配置
+            config.setMinioEndpoint(props.getProperty("minio.endpoint", "http://localhost:9000"));
+            config.setMinioAccessKeyId(props.getProperty("minio.access.key.id", "minioadmin"));
+            config.setMinioAccessKeySecret(props.getProperty("minio.access.key.secret", "minioadmin"));
+            config.setMinioBucket(props.getProperty("minio.bucket", "video-storage"));
+            config.setMinioSecure(Boolean.parseBoolean(props.getProperty("minio.secure", "false")));
             
             // 加载YOLO配置
             config.setYoloModelPath(props.getProperty("yolo.model.path", 
@@ -110,9 +130,16 @@ public class VideoStreamConfig implements Serializable {
             LOG.info("Configuration loaded successfully");
             LOG.info("Kafka: {} -> topic: {}", config.getKafkaBootstrapServers(), config.getKafkaTopic());
             LOG.info("Doris: {} -> {}.{}", config.getDorisFenodes(), config.getDorisDatabase(), config.getDorisTable());
-            LOG.info("Video protocol: {}, RTSP transport: {}, timeout: {}s", 
+            LOG.info("Storage type: {}", config.getStorageType());
+            if ("oss".equalsIgnoreCase(config.getStorageType())) {
+                LOG.info("OSS: endpoint={}, bucket={}", config.getOssEndpoint(), config.getOssBucket());
+            } else if ("minio".equalsIgnoreCase(config.getStorageType())) {
+                LOG.info("MinIO: endpoint={}, bucket={}, secure={}",
+                        config.getMinioEndpoint(), config.getMinioBucket(), config.isMinioSecure());
+            }
+            LOG.info("Video protocol: {}, RTSP transport: {}, timeout: {}s",
                     config.getVideoStreamProtocol(), config.getRtspTransport(), config.getRtspTimeout());
-            LOG.info("Video codec: {}, bitrate: {}k, framerate: {}", 
+            LOG.info("Video codec: {}, bitrate: {}k, framerate: {}",
                     config.getVideoCodec(), config.getVideoBitrate(), config.getFramerate());
             
         } catch (Exception e) {

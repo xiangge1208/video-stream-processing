@@ -8,6 +8,7 @@ import com.video.streaming.model.VideoFrame;
 import com.video.streaming.model.VideoSegment;
 import com.video.streaming.serialization.VideoFrameDeserializationSchema;
 import com.video.streaming.sink.DorisSinkBuilder;
+import com.video.streaming.sink.MinIOVideoSink;
 import com.video.streaming.sink.OSSVideoSink;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
@@ -79,13 +80,26 @@ public class VideoStreamProcessingJob {
 
         DorisSinkBuilder.addToDoris(jsonStringStream, config);
 
-        // 9. 视频切片保存到OSS
-        videoSegmentStream
-                .keyBy(VideoSegment::getStreamId)
-                .process(new VideoSegmentFunction())
-                .addSink(new OSSVideoSink(config))
-                .name("oss-sink")
-                .uid("oss-sink-uid");
+        // 9. 视频切片保存到对象存储 (OSS 或 MinIO)
+        String storageType = config.getStorageType();
+        if ("minio".equalsIgnoreCase(storageType)) {
+            videoSegmentStream
+                    .keyBy(VideoSegment::getStreamId)
+                    .process(new VideoSegmentFunction())
+                    .addSink(new MinIOVideoSink(config))
+                    .name("minio-sink")
+                    .uid("minio-sink-uid");
+            LOG.info("Using MinIO for video storage");
+        } else {
+            // 默认使用 OSS
+            videoSegmentStream
+                    .keyBy(VideoSegment::getStreamId)
+                    .process(new VideoSegmentFunction())
+                    .addSink(new OSSVideoSink(config))
+                    .name("oss-sink")
+                    .uid("oss-sink-uid");
+            LOG.info("Using OSS for video storage");
+        }
 
         // 10. 执行任务
         LOG.info("Starting Video Stream Processing Job...");

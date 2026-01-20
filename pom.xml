@@ -26,6 +26,7 @@
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.20.0</log4j.version>
         <javacv.version>1.5.9</javacv.version>
+        <minio.version>8.5.7</minio.version>
     </properties>
 
     <dependencies>
@@ -137,6 +138,13 @@
             <groupId>com.aliyun.oss</groupId>
             <artifactId>aliyun-sdk-oss</artifactId>
             <version>${aliyun.oss.version}</version>
+        </dependency>
+
+        <!-- ========== MinIO SDK ========== -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>${minio.version}</version>
         </dependency>
 
         <!-- ========== Lombok ========== -->
